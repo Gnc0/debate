@@ -1,7 +1,7 @@
 ---
 title: "chatflow本质是什么?"
-base_url: "https://yunwu.ai/v1/chat/completions"
-api_key: "sk-kKD1OkJFRA1gI4hI1lrf89FkjWy9PGZZf7nRqTuXOyYgnRvy"
+base_url: "${DEBATE_BASE_URL}"
+api_key: "${DEBATE_API_KEY}"
 debaters:
 - name: "Linus Torvalds"
   model: "claude-sonnet-4-6"
