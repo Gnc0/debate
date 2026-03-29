@@ -37,6 +37,7 @@ class AbandonedClaim(TypedDict):
 
 class ParticipantState(TypedDict):
     name: str
+    active: bool  # True = 在辩论中；False = 已通过 drop_debaters 退出
     stance_version: int
     stance: str  # 基于上一版本增量更新的辩手立场笔记
     core_claims: list[Claim]
@@ -65,7 +66,7 @@ class CompactState(TypedDict):
     compact_version: int             # schema version = 1
     covered_seq_end: int
     prev_compact_seq: int | None
-    topic: dict                      # {"current_formulation": str, "notes": str|None}
+    topic: dict  # LLM 生成的辩题演进摘要（非原始辩题文本，原始文本在 Log.topic）；结构：{"current_formulation": str, "notes": str|None}
     participants: list[ParticipantState]
     axioms: list[str]
     disputes: list[Dispute]
@@ -146,6 +147,7 @@ def validate_participant_state(ps: dict) -> bool:
     """
     required_fields = [
         "name",
+        "active",
         "stance_version",
         "stance",
         "core_claims",
@@ -324,6 +326,7 @@ _PHASE_A_MONOTONICITY = """\
 def build_phase_a_prompt(
     prev_state: dict | None,
     delta_entries: list[dict],
+    compact_message: str = "",
 ) -> tuple[str, str]:
     """
     构建 Phase A（公共信息生成）的 (system, user) prompt。
@@ -376,6 +379,11 @@ def build_phase_a_prompt(
         "注意：disputes.positions 字段是 dict，key 为辩手名称（string），value 为该辩手在此争点上的立场（string）。"
     )
 
+    if compact_message:
+        user_parts.append("")
+        user_parts.append("## 额外保留/注意事项（用户指定）")
+        user_parts.append(compact_message)
+
     user = "\n".join(user_parts)
     return system, user
 
@@ -383,6 +391,7 @@ def build_phase_a_prompt(
 _PHASE_B_OUTPUT_SCHEMA = """\
 {
   "name": "<辩手名称（string）>",
+  "active": true,
   "stance_version": <版本号，整数，每次更新加1>,
   "stance": "<以基底文本（initial_style 或上一版本 stance）为起点，对原文做最小精化：参考 core_claims/key_arguments/abandoned_claims 的变化，只修改确实改变的部分；若立场无实质变化则与基底高度相似；不要压缩成一句话，保留原始风格和语气（string）>",
   "core_claims": [
@@ -427,6 +436,8 @@ def build_phase_b_prompt(
     initial_style: str,
     delta_entries: list[dict],
     prev_stance: str = "",
+    compact_message: str = "",
+    prev_participant: "dict | None" = None,
 ) -> tuple[str, str]:
     """
     构建 Phase B（辩手立场自更新）的 (system, user) prompt。
@@ -436,6 +447,10 @@ def build_phase_b_prompt(
     - initial_style: 原始 topic 中该辩手的 style 字符串
     - delta_entries: 全部增量条目（不过滤辩手，cross_exam 全部给看）
     - prev_stance: 上一次 compact 的 stance（空字符串表示首次）
+    - prev_participant: 上一次 compact 的完整辩手状态（含 core_claims / key_arguments / abandoned_claims）
+
+    注意：active 字段过滤由调用方（runner.py）负责——调用方在遍历 participants 时
+    应跳过 active == False 的辩手，不再对其调用本函数。
     """
     name = debater.get("name", "未知辩手")
     system = _PHASE_B_SYSTEM_TEMPLATE.format(name=name)
@@ -451,6 +466,22 @@ def build_phase_b_prompt(
     user_parts.append("## stance 的基底文本（以此为起点做最小修改，不要重新生成摘要）")
     user_parts.append(prev_stance if prev_stance else (initial_style.strip() if initial_style else "（未提供）"))
     user_parts.append("")
+
+    # 上一次 compact 的结构化基底（若有）——让模型以此为起点做增量更新而非从零生成
+    if prev_participant:
+        user_parts.append("## 上一次 compact 的结构化基底（以此为起点，仅对增量发言中变化的部分做最小修改）")
+        prev_core = prev_participant.get("core_claims", [])
+        prev_args = prev_participant.get("key_arguments", [])
+        prev_abandoned = prev_participant.get("abandoned_claims", [])
+        prev_struct = {
+            "core_claims": prev_core,
+            "key_arguments": prev_args,
+            "abandoned_claims": prev_abandoned,
+        }
+        user_parts.append("```json")
+        user_parts.append(json.dumps(prev_struct, ensure_ascii=False, indent=2))
+        user_parts.append("```")
+        user_parts.append("")
 
     # 辩论增量记录（全部，不过滤）
     user_parts.append("## 辩论发言记录（全部增量）")
@@ -470,11 +501,24 @@ def build_phase_b_prompt(
     user_parts.append(_PHASE_B_OUTPUT_SCHEMA)
     user_parts.append("```")
     user_parts.append("")
-    user_parts.append(
-        "特别说明（stance 字段）：上方「stance 的基底文本」就是你的写作起点。"
-        "以该原文为基础，只对辩论中确实发生变化的部分做最小修改；"
-        "若立场无实质变化，stance 应与基底文本高度相似，不要重新概括或压缩。"
-    )
+    if prev_participant:
+        user_parts.append(
+            "特别说明：上方「上一次 compact 的结构化基底」是你的起点。"
+            "core_claims / key_arguments / abandoned_claims 以该基底为准，只更新增量发言中确实发生变化的条目；"
+            "未在增量发言中出现的条目原样保留，不要删减。"
+            "stance 字段同样以「stance 的基底文本」为起点做最小修改。"
+        )
+    else:
+        user_parts.append(
+            "特别说明（stance 字段）：上方「stance 的基底文本」就是你的写作起点。"
+            "以该原文为基础，只对辩论中确实发生变化的部分做最小修改；"
+            "若立场无实质变化，stance 应与基底文本高度相似，不要重新概括或压缩。"
+        )
+
+    if compact_message:
+        user_parts.append("")
+        user_parts.append("## 额外保留/注意事项（用户指定）")
+        user_parts.append(compact_message)
 
     user = "\n".join(user_parts)
     return system, user
@@ -499,6 +543,8 @@ def build_validity_check_prompt(stance_json: str) -> tuple[str, str]:
 def get_compact_model_config(cfg: dict) -> tuple[str, str, str]:
     """
     从 topic cfg 中提取 compact_model 配置，返回 (model, base_url, api_key)。
+
+    # v2 log 中，compact 配置存于 log.initial_config（通过 resolve_effective_config 获取）
     """
     model = cfg.get("compact_model")
     if not model:
@@ -641,7 +687,7 @@ def format_delta_entries_text(entries: list[dict]) -> str:
 
     for entry in entries:
         tag = entry.get("tag", "")
-        if tag in ("thinking", "summary", "compact_checkpoint"):
+        if tag in ("thinking", "summary", "compact_checkpoint", "config_override"):
             continue
 
         seq = entry.get("seq", "?")
@@ -755,7 +801,7 @@ def build_stance_correction_prompt(
     system_parts.append("")
     system_parts.append(
         "输出 JSON，字段同 ParticipantState"
-        "（name/stance_version/stance/core_claims/key_arguments/abandoned_claims）。"
+        "（name/active/stance_version/stance/core_claims/key_arguments/abandoned_claims）。"
         "输出严格 JSON，不附加任何解释文字。"
     )
 

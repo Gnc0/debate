@@ -19,7 +19,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from debate_tool.core import DEFAULT_EARLY_STOP_THRESHOLD, check_convergence
-from debate_tool.runner import build_log_path, call_llm, run_cross_exam, Log
+from debate_tool.log_io import build_log_path, Log
+from debate_tool.llm_client import call_llm
+from debate_tool.cross_exam import run_cross_exam
 
 
 # ---------------------------------------------------------------------------
@@ -278,10 +280,11 @@ class DebateSession:
             judge_sys,
             message,
             temperature=0.3,
-            max_tokens=judge.get("max_tokens", 8000),
+            max_reply_tokens=judge.get("max_tokens", 8000),
             timeout=self.cfg["timeout"],
             base_url=judge_base_url,
             api_key=judge_api_key,
+            purpose="session.judge_chat",
         )
 
         self.judge_chats.append(
@@ -323,11 +326,8 @@ class DebateSession:
         debate_base_url = (cfg.get("base_url", "") or "").strip()
         debate_api_key = (cfg.get("api_key", "") or "").strip()
 
-        # cross_exam_rounds computation
-        if cross_exam < 0:
-            cross_exam_rounds = set(range(1, self.total_rounds))
-        else:
-            cross_exam_rounds = set(range(1, min(cross_exam, self.total_rounds) + 1))
+        from debate_tool.core_loop import compute_xexam_rounds
+        cross_exam_rounds = compute_xexam_rounds(cross_exam, self.total_rounds)
 
         self._emit(
             DebateEvent(
@@ -423,6 +423,7 @@ class DebateSession:
                         timeout=timeout,
                         base_url=debater_base_url,
                         api_key=debater_api_key,
+                        purpose="session.debater",
                     )
                     self._emit(
                         DebateEvent(
@@ -557,10 +558,11 @@ class DebateSession:
                 judge_sys,
                 f"\u5168\u90e8\u8fa9\u8bba\uff08\u7b5b\u9009\u540e\uff09\uff1a\n\n{log.compact_filtered()}{judge_context_extra}",
                 temperature=0.3,
-                max_tokens=judge.get("max_tokens", 8000),
+                max_reply_tokens=judge.get("max_tokens", 8000),
                 timeout=timeout,
                 base_url=judge_base_url,
                 api_key=judge_api_key,
+                purpose="session.judge_summary",
             )
             log.add(judge["name"], summary, "summary")
 

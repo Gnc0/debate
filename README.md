@@ -4,7 +4,7 @@
 
 提供 Web UI 和命令行两种使用方式：
 - **Web UI** — 统一单页应用，内含辩论配置向导 + 实时查看器，支持从界面创建并启动辩论
-- **命令行** — `debate-tool run/resume/compact/modify` 直接驱动辩论引擎
+- **命令行** — `debate-tool run/resume/modify/compact` 直接驱动辩论引擎
 
 ## 1. 安装
 
@@ -87,73 +87,86 @@ debate-tool run my_topic.md --early-stop 0.6
 
 # 质询 + 早停
 debate-tool run my_topic.md --cross-exam --early-stop
+
+# 启用 Chain-of-Thought（辩手先思考再发言，思考内容记入 log 但不传给对方）
+debate-tool run my_topic.md --cot
+
+# 指定 CoT 最大 token 数
+debate-tool run my_topic.md --cot 2000
 ```
 
 ### 续跑与压缩
 
 ```bash
-# 续跑 1 轮（传入日志文件 + topic 文件，顺序任意）
-debate-tool resume my_topic_debate_log.json my_topic.md
+# 简单续跑 1 轮（第一个参数：日志文件 .json，必填）
+debate-tool resume my_topic_debate_log.json --rounds 1
+
+# 使用 Resume Topic 文件（第二个参数：.md，可选，用于批量覆盖配置）
+debate-tool resume my_topic_debate_log.json phase2.md
 
 # 续跑 2 轮 + 注入观察者意见
-debate-tool resume my_topic_debate_log.json my_topic.md --rounds 2 --message "请重点讨论安全性"
+debate-tool resume my_topic_debate_log.json --rounds 2 --message "请重点讨论安全性"
 
 # 续跑时启用质询
-debate-tool resume my_topic_debate_log.json my_topic.md --rounds 1 --cross-exam
+debate-tool resume my_topic_debate_log.json --rounds 1 --cross-exam
 
-# 续跑后不执行裁判总结
-debate-tool resume my_topic_debate_log.json my_topic.md --no-judge
+# 只触发 judge，不追加辩论（rounds=0）
+debate-tool resume my_topic_debate_log.json --rounds 0
+
+# 跳过裁判（辩论正常跑，只是不执行 judge phase）
+debate-tool run my_topic.md --no-judge
+debate-tool resume my_topic_debate_log.json --rounds 1 --no-judge
+
+# 只注入配置、什么都不做（用于向 log 写入新字段，如 compact_model）
+# 推荐改用 modify，语义更清晰：
+debate-tool modify my_topic_debate_log.json inject_config.md
+# 等价于（但 modify 更清晰）：
+# debate-tool resume my_topic_debate_log.json inject_config.md --rounds 0 --no-judge
+
+# 变更辩手组成（add/drop）须通过 Resume Topic 文件 + --force（防止误操作）
+debate-tool resume my_topic_debate_log.json phase2.md --force
+
+# 轻量级指引（不写入 log，仅影响本次续跑的每轮任务描述）
+debate-tool resume my_topic_debate_log.json --rounds 1 --guide "聚焦幕府财政危机的根本原因"
 
 # 跳过话题一致性检查（如果日志和 topic 来自不同话题）
 debate-tool resume my_topic_debate_log.json different_topic.md --force
 
 # 手动压缩日志（全部压缩，生成 checkpoint）
-debate-tool compact my_topic_debate_log.json --compress ALL
+debate-tool compact my_topic_debate_log.json
 
-# 保留最后 2 条，其余压缩
-debate-tool compact my_topic_debate_log.json --compress -2
+# 保留末尾 2 条不压缩，其余全压
+debate-tool compact my_topic_debate_log.json --keep-last 2
 
-# 从后往前压缩最多 5 条
-debate-tool compact my_topic_debate_log.json --compress 5
+# 附加压缩指令
+debate-tool compact my_topic_debate_log.json --message "重点保留安全性论点"
 ```
 
-**话题一致性检查**
+### 仅修改配置（modify）
 
-`resume` 命令会自动使用轻量级 LLM（默认 `gpt-5-nano`，fallback 到第一辩手的模型）验证日志和 topic 文件是否来自同一辩题：
-
-- ✅ 一致时，正常继续续跑，输出使用的模型名称
-- ⚠️ 不一致时，显示 LLM 的详细 reasoning（解释为什么不匹配）并拒绝继续，用户可用 `--force` 标志跳过检查：
-  ```bash
-  debate-tool resume my_log.json wrong_topic.md --force
-  ```
-- 🔄 模型可用性：如果指定模型不可用，自动 fallback 到第一辩手的模型（保证检查总能执行）
-- 如果 LLM 调用失败（所有模型均无可用），只打印警告但不中断操作
-
-### 修改配置
+`modify` 是 `resume --rounds 0 --no-judge` 的简写，仅应用 Resume Topic 中的配置变更，不执行辩论也不触发裁判：
 
 ```bash
-# 修改辩手模型
-debate-tool modify my_topic.md --set debater.甲.model=gpt-5
+# 仅应用 Resume Topic 配置变更（不辩论、不裁判）
+debate-tool modify my_topic_debate_log.json inject_config.md
 
-# 修改全局字段
-debate-tool modify my_topic.md --set rounds=4 --set max_reply_tokens=2000
-
-# 添加辩手
-debate-tool modify my_topic.md --add "新辩手|gpt-4o-mini|批判派风格"
-
-# 移除辩手（--force 跳过 log 一致性警告）
-debate-tool modify my_topic.md --drop 旧辩手 --force
-
-# 扬弃立场（修改辩手 style，历史发言不变）
-debate-tool modify my_topic.md --pivot "甲|全新立场描述" --reason "第二阶段讨论转向"
+# 涉及 add/drop 辩手时仍需 --force
+debate-tool modify my_topic_debate_log.json phase2.md --force
 ```
 
-> 所有 `resume` / `compact` / `modify` 操作均追加到同一 `*_debate_log.json`，原始历史完整保留。
+**Resume Topic 文件**
+
+Resume Topic 文件（.md）支持增量覆盖配置，覆盖内容记入 log 并持久累积：
+
+- **YAML front-matter**：增量覆盖字段（`middle_task`, `final_task`, `constraints`, `judge_instructions`, `add_debaters`, `drop_debaters`, `judge`, `cross_exam`, `max_reply_tokens`, `cot` 等）；`add_debaters`/`drop_debaters` 需配合 `--force` 使用
+- **Markdown body**：观察者消息（等同于 `--message`）
+
+> 所有 `resume` / `compact` 操作均追加到同一 `*_debate_log.json`，原始历史完整保留。
 
 > 日志格式转换脚本（双向）：
 
 ```bash
-# 旧版 Markdown 日志 -> JSON（用于 resume/compact/modify）
+# 旧版 Markdown 日志 -> JSON（用于 resume/compact）
 python scripts/convert_md_log_to_json.py old_debate_log.md
 
 # JSON 日志 -> Markdown（用于阅读）
@@ -164,13 +177,6 @@ python scripts/convert_json_log_to_md.py my_topic_debate_log.json --stdout
 ```
 
 > 主工具本身只接受 JSON 日志；Markdown 主要用于阅读或历史迁移。
-
-### 生成辩手立场
-
-```bash
-debate-tool stance my_topic.md
-debate-tool stance my_topic.md --num 5 --format yaml
-```
 
 > 所有命令也可通过 `python -m debate_tool <command>` 调用。
 
@@ -203,7 +209,6 @@ export DEFAULT_DEBATE_MODELS="gpt-5.2,kimi-k2.5,MiniMax-M2.5"
 ```
 
 - 未设置时默认全部使用 `gpt-5.2`
-- 立场生成器生成的辩手立场将自动按此列表循环分配模型，不再由 LLM 推荐
 
 ## 4. YAML 字段参考
 
@@ -217,6 +222,7 @@ export DEFAULT_DEBATE_MODELS="gpt-5.2,kimi-k2.5,MiniMax-M2.5"
 | `max_reply_tokens` | int | 6000 | 辩手单次回复最多输出的 token 数（控制输出长度，与上下文窗口无关） |
 | `cross_exam` | int | `0` | 质询轮数 (0=关, 1=R1后, -1=每轮) |
 | `early_stop` | bool/float | `false` | 收敛早停: `true` 用默认阈值 55%, 或指定 0~1 的浮点数 |
+| `no_judge` | bool | `false` | 跳过裁判总结阶段（辩论正常跑，不调用 judge）；可在 topic/resume topic YAML 中设置 |
 | `base_url` | string | env/fallback | OpenAI 兼容 API 端点 |
 | `api_key` | string | env/fallback | API 密钥 |
 | `debaters` | list | 3 个默认辩手 | 每项含 `name` / `model` / `style`，可选 `base_url` / `api_key` |
@@ -290,28 +296,42 @@ early_stop: 0.7        # 自定义阈值 70%
 
 可与 `--cross-exam` 组合使用。
 
-## 5. 立场生成器
+## 5. 测试
 
-`stance` 子命令是独立的 LLM 驱动立场生成器，根据议题自动推荐辩手立场。辩手模型由环境变量 `DEFAULT_DEBATE_MODELS` 循环分配，不再由 LLM 推荐。
+项目包含完整的端到端集成测试套件，通过内置 Mock Server 完全离线运行，无需真实 LLM API。
 
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `topic` | 话题 `.md` 文件路径（必填） | — |
-| `--model MODEL` | 分析议题所用 LLM | `gpt-5.2` |
-| `--num N` | 辩手数量 | 3 |
-| `--prompt TEXT` | 附加生成指令 | — |
-| `--format json\|yaml` | 输出格式 | `json` |
-| `--base-url URL` | API 端点 | — |
-| `--api-key KEY` | API 密钥 | — |
+```bash
+# 运行全部测试（Mock 模式，无需 API key）
+python3 test/test.py
 
-### Library API
+# 静默模式
+python3 test/test.py --quiet
 
-```python
-from debate_tool.stance import generate_stances_sync, format_stances_json
+# 仅运行快速测试（dry_run + error 系列）
+python3 test/test.py --quick
 
-result = generate_stances_sync(topic_body, num_debaters=3)
-print(format_stances_json(result))
+# 按名称过滤
+python3 test/test.py --filter basic,cross_exam
+
+# 生成/更新 golden 参考文件
+python3 test/test.py --generate-golden
 ```
+
+测试覆盖 58 个场景、62 个特性维度，包括：
+- **RUN 系列**（13 项）：basic、cross_exam、cot、constraints、early_stop 等
+- **RESUME 系列**（10 项）：message、guide、add/drop debater、judge override 等
+- **COMPACT 系列**（10 项）：全量压缩、幂等性、keep-last、resume chain 等
+- **DEGRADATION 系列**（2 项）：Phase A/B 重试降级
+- **CANARY 系列**（3 项）：constraints/message/guide prompt 注入验证
+- **ERROR 系列**（12 项）：缺少文件、非法参数、--force 校验等
+- **NEW 系列**（8 项）：version、modify、drop_debater 等
+
+**核心机制**：
+- **Mock Server**：轻量级 HTTP 服务器，模拟 OpenAI Chat/Embeddings API，路由表从 topic 文件的 `mock_responses` YAML 字段自动加载
+- **Golden 对比**：归一化时间戳/URL/API key 后，与 `test/golden/` 下的参考文件逐字符比较
+- **结构性检查**：独立于文本内容的结构断言（辩手数、轮数、质询位置等）
+
+> 详细说明见 [test/README.md](test/README.md)
 
 ## 6. 文件结构
 
@@ -324,21 +344,33 @@ debate-tool/
 ├── requirements/          # 传统 requirements 文件（向后兼容）
 │   ├── core.txt
 │   └── web.txt
-└── debate_tool/
-    ├── __init__.py        # 版本
-    ├── __main__.py        # 统一入口路由（run / resume / compact / modify / live / stance）
-    ├── runner.py          # 辩论运行器（核心引擎）
-    ├── session.py         # DebateSession（Web live 用，通过 subprocess 调用 CLI）
-    ├── core.py            # 纯逻辑：默认值、YAML 生成、文件 I/O
-    ├── stance.py          # 立场生成器（可独立使用）
-    └── web/
-        ├── __init__.py
-        ├── __main__.py    # Web 入口
-        ├── app.py         # Flask 路由 + API 端点
-        ├── live.py        # 辩论实时查看器 Blueprint（subprocess + 文件监视 → SSE）
-        └── templates/
-            ├── debate_live.html  # 统一 UI（含新建辩论 Modal）
-            └── wizard.html       # 完整配置向导（/wizard 路由）
+├── debate_tool/
+│   ├── __init__.py        # 版本
+│   ├── __main__.py        # 统一入口路由（run / resume / compact / live）
+│   ├── runner.py          # 辩论运行器（核心引擎）
+│   ├── session.py         # DebateSession（Web live 用，通过 subprocess 调用 CLI）
+│   ├── core.py            # 纯逻辑：默认值、YAML 生成、文件 I/O
+│   └── web/
+│       ├── __init__.py
+│       ├── __main__.py    # Web 入口
+│       ├── app.py         # Flask 路由 + API 端点
+│       ├── live.py        # 辩论实时查看器 Blueprint（subprocess + 文件监视 → SSE）
+│       └── templates/
+│           ├── debate_live.html  # 统一 UI（含新建辩论 Modal）
+│           └── wizard.html       # 完整配置向导（/wizard 路由）
+└── test/
+    ├── test.py              # 端到端测试主文件
+    ├── mock_server.py       # Mock HTTP 服务器
+    ├── mock_routes.py       # 路由表（从 topic YAML 解析）
+    ├── golden_compare.py    # Golden 文件对比工具
+    ├── structural_checks.py # 结构性断言
+    ├── README.md            # 测试文档
+    ├── topics/              # 测试用 topic 文件（含 mock_responses）
+    ├── resume_topics/       # Resume 测试用覆盖文件
+    └── golden/              # Golden 参考文件（标准答案）
+        ├── run/
+        ├── resume/
+        └── compact/
 ```
 
 ## License
